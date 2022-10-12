@@ -33,17 +33,17 @@ from PathScripts import PostUtils
 TOOLTIP = """
 This is a postprocessor file for the Path workbench. It is used to
 take a pseudo-gcode fragment outputted by a Path object, and output
-real GCode suitable for a linuxcnc 3 axis mill. This postprocessor, once placed
+real GCode suitable for a Laguna CNC. This postprocessor, once placed
 in the appropriate PathScripts folder, can be used directly from inside
 FreeCAD, via the GUI importer or via python scripts with:
 
-import linuxcnc_post
-linuxcnc_post.export(object,"/path/to/file.ncc","")
+import laguna_post
+laguna_post.export(object,"/path/to/file.ncc","")
 """
 
 now = datetime.datetime.now()
 
-parser = argparse.ArgumentParser(prog="linuxcnc", add_help=False)
+parser = argparse.ArgumentParser(prog="laguna", add_help=False)
 parser.add_argument("--no-header", action="store_true", help="suppress header output")
 parser.add_argument(
     "--no-comments", action="store_true", help="suppress comment output"
@@ -89,7 +89,7 @@ TOOLTIP_ARGS = parser.format_help()
 # These globals set common customization preferences
 OUTPUT_COMMENTS = True
 OUTPUT_HEADER = True
-OUTPUT_LINE_NUMBERS = False
+OUTPUT_LINE_NUMBERS = True
 SHOW_EDITOR = True
 MODAL = False  # if true commands are suppressed if the same as previous line.
 USE_TLO = True  # if true G43 will be output following tool changes
@@ -97,26 +97,25 @@ OUTPUT_DOUBLES = (
     True  # if false duplicate axis values are suppressed if the same as previous line.
 )
 COMMAND_SPACE = " "
-LINENR = 100  # line number starting value
+LINENR = 0  # line number starting value
 
 # These globals will be reflected in the Machine configuration of the project
 UNITS = "G21"  # G21 for metric, G20 for us standard
 UNIT_SPEED_FORMAT = "mm/min"
 UNIT_FORMAT = "mm"
 
-MACHINE_NAME = "LinuxCNC"
+MACHINE_NAME = "Laguna"
 CORNER_MIN = {"x": 0, "y": 0, "z": 0}
 CORNER_MAX = {"x": 500, "y": 300, "z": 300}
 PRECISION = 3
 
 # Preamble text will appear at the beginning of the GCODE output file.
-PREAMBLE = """G17 G54 G40 G49 G80 G90
+PREAMBLE = """
 """
 
 # Postamble text will appear following the last operation.
 POSTAMBLE = """M05
-G17 G54 G90 G80 G40
-M2
+M30
 """
 
 # Pre operation text will be inserted before every operation
@@ -152,30 +151,42 @@ def processArguments(argstring):
         args = parser.parse_args(shlex.split(argstring))
         if args.no_header:
             OUTPUT_HEADER = False
+        print("Output header = %d" % OUTPUT_HEADER)
         if args.no_comments:
             OUTPUT_COMMENTS = False
+        print("Output comments = %d" % OUTPUT_COMMENTS)
         if args.line_numbers:
             OUTPUT_LINE_NUMBERS = True
+        print("Output line numbers = %d" % OUTPUT_LINE_NUMBERS)
         if args.no_show_editor:
             SHOW_EDITOR = False
         print("Show editor = %d" % SHOW_EDITOR)
         PRECISION = args.precision
         if args.preamble is not None:
             PREAMBLE = args.preamble
+        print("Preamble = " + PREAMBLE)
         if args.postamble is not None:
             POSTAMBLE = args.postamble
+        print("Postamble = " + POSTAMBLE)
         if args.inches:
             UNITS = "G20"
             UNIT_SPEED_FORMAT = "in/min"
             UNIT_FORMAT = "in"
             PRECISION = 4
+        print("Units = " + UNITS)
+        print("Unit speed format = " + UNIT_SPEED_FORMAT)
+        print("Unit format = " + UNIT_FORMAT)
+        print("Precision = " + PRECISION)
         if args.modal:
             MODAL = True
+        print("Modal = %d" % MODAL)
         if args.no_tlo:
             USE_TLO = False
+        print("Use TLO = %d" % USE_TLO)
         if args.axis_modal:
             print("here")
             OUTPUT_DOUBLES = False
+        print("OutputDoubles = %d" % OUTPUT_DOUBLES)
 
     except Exception:
         return False
@@ -199,12 +210,13 @@ def export(objectslist, filename, argstring):
             )
             return None
 
-    print("postprocessing...")
+    print("Begin postprocessing...")
     gcode = ""
 
     # write header
     if OUTPUT_HEADER:
         gcode += linenumber() + "(Exported by FreeCAD)\n"
+        gcode += linenumber() + "(Filename: " + filename + ")\n"
         gcode += linenumber() + "(Post Processor: " + __name__ + ")\n"
         gcode += linenumber() + "(Output Time:" + str(now) + ")\n"
 
@@ -213,7 +225,11 @@ def export(objectslist, filename, argstring):
         gcode += linenumber() + "(begin preamble)\n"
     for line in PREAMBLE.splitlines(False):
         gcode += linenumber() + line + "\n"
+    if OUTPUT_COMMENTS:
+        gcode += linenumber() + "(" + UNITS + ")\n"
     gcode += linenumber() + UNITS + "\n"
+    if OUTPUT_COMMENTS:
+        gcode += linenumber() + "(finish preamble)\n"
 
     for obj in objectslist:
 
@@ -270,9 +286,11 @@ def export(objectslist, filename, argstring):
 
     # do the post_amble
     if OUTPUT_COMMENTS:
-        gcode += "(begin postamble)\n"
+        gcode += linenumber() + "(begin postamble)\n"
     for line in POSTAMBLE.splitlines(True):
         gcode += linenumber() + line
+    if OUTPUT_COMMENTS:
+        gcode += linenumber() + "(finish preamble)\n"
 
     if FreeCAD.GuiUp and SHOW_EDITOR:
         final = gcode
@@ -287,7 +305,7 @@ def export(objectslist, filename, argstring):
     else:
         final = gcode
 
-    print("done postprocessing.")
+    print("finish postprocessing.")
 
     if not filename == "-":
         gfile = pythonopen(filename, "w")
@@ -318,7 +336,7 @@ def parse(pathobj):
     currLocation = {}  # keep track for no doubles
 
     # the order of parameters
-    # linuxcnc doesn't want K properties on XY plane  Arcs need work.
+    # laguna doesn't want K properties on XY plane  Arcs need work.
     params = [
         "X",
         "Y",
@@ -342,8 +360,8 @@ def parse(pathobj):
     currLocation.update(firstmove.Parameters)  # set First location Parameters
 
     if hasattr(pathobj, "Group"):  # We have a compound or project.
-        # if OUTPUT_COMMENTS:
-        #     out += linenumber() + "(compound: " + pathobj.Label + ")\n"
+        if OUTPUT_COMMENTS:
+            out += linenumber() + "(compound: " + pathobj.Label + ")\n"
         for p in pathobj.Group:
             out += parse(p)
         return out
@@ -353,8 +371,8 @@ def parse(pathobj):
         if not hasattr(pathobj, "Path"):
             return out
 
-        # if OUTPUT_COMMENTS:
-        #     out += linenumber() + "(" + pathobj.Label + ")\n"
+        if OUTPUT_COMMENTS:
+            out += linenumber() + "(" + pathobj.Label + ")\n"
 
         for c in pathobj.Path.Commands:
 
@@ -376,23 +394,17 @@ def parse(pathobj):
                     if param == "F" and (
                         currLocation[param] != c.Parameters[param] or OUTPUT_DOUBLES
                     ):
-                        if c.Name not in [
-                            "G0",
-                            "G00",
-                        ]:  # linuxcnc doesn't use rapid speeds
-                            speed = Units.Quantity(
-                                c.Parameters["F"], FreeCAD.Units.Velocity
-                            )
-                            if speed.getValueAs(UNIT_SPEED_FORMAT) > 0.0:
-                                outstring.append(
-                                    param
-                                    + format(
-                                        float(speed.getValueAs(UNIT_SPEED_FORMAT)),
-                                        precision_string,
-                                    )
+                        speed = Units.Quantity(
+                            c.Parameters["F"], FreeCAD.Units.Velocity
+                        )
+                        if speed.getValueAs(UNIT_SPEED_FORMAT) > 0.0:
+                            outstring.append(
+                                param
+                                + format(
+                                    float(speed.getValueAs(UNIT_SPEED_FORMAT)),
+                                    precision_string,
                                 )
-                        else:
-                            continue
+                            )
                     elif param == "T":
                         outstring.append(param + str(int(c.Parameters["T"])))
                     elif param == "H":
