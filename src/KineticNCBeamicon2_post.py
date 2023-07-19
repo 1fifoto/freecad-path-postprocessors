@@ -19,7 +19,17 @@
 # *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  *
 # *   USA                                                                   *
 # *                                                                         *
-# ***************************************************************************
+# ***************************************************************************/
+
+# ****************************************************************************
+# *   Modifications by Samuel Mayer (samuel.mayer@posteo.de)                 *
+# *   2021                                                                   *
+# *                                                                          *
+# *   This postprocessor is based on the linuxcnc_post coming with FreeCAD   *
+# *   0.19 and modified to work with Kinetic-NC (cnc-step.com) and Beamicon2 *
+# *   (benezan-electronics.de) (up to 4 Axis)                                *
+# *                                                                          *
+# ***************************************************************************/
 
 from __future__ import print_function
 import FreeCAD
@@ -29,21 +39,23 @@ import argparse
 import datetime
 import shlex
 from PathScripts import PostUtils
+from PathScripts import PathUtils
 
 TOOLTIP = """
 This is a postprocessor file for the Path workbench. It is used to
 take a pseudo-gcode fragment outputted by a Path object, and output
-real GCode suitable for a Laguna CNC. This postprocessor, once placed
-in the appropriate PathScripts folder, can be used directly from inside
+real GCode suitable for the KineticNC/Beamicon2 Control Software for up to 4 Axis (3 plus rotary). 
+The CORNER_MAX Values are set for a mill with max travel of 1000mm in X, 600mm in Y and 300mm in Z direction.
+This postprocessor, once placed in the appropriate PathScripts folder, can be used directly from inside
 FreeCAD, via the GUI importer or via python scripts with:
 
-import laguna_post
-laguna_post.export(object,"/path/to/file.ncc","")
+import KineticNCBeamicon2_post
+KineticNCBeamicon2_post.export(object,"/path/to/file.ncc","")
 """
 
 now = datetime.datetime.now()
 
-parser = argparse.ArgumentParser(prog="laguna", add_help=False)
+parser = argparse.ArgumentParser(prog="linuxcnc", add_help=False)
 parser.add_argument("--no-header", action="store_true", help="suppress header output")
 parser.add_argument(
     "--no-comments", action="store_true", help="suppress comment output"
@@ -78,43 +90,40 @@ parser.add_argument(
 parser.add_argument(
     "--axis-modal", action="store_true", help="Output the Same Axis Value Mode"
 )
-parser.add_argument(
-    "--no-tlo",
-    action="store_true",
-    help="suppress tool length offset (G43) following tool changes",
-)
 
 TOOLTIP_ARGS = parser.format_help()
 
 # These globals set common customization preferences
 OUTPUT_COMMENTS = True
 OUTPUT_HEADER = True
-OUTPUT_LINE_NUMBERS = True
+OUTPUT_LINE_NUMBERS = False
 SHOW_EDITOR = True
 MODAL = False  # if true commands are suppressed if the same as previous line.
-USE_TLO = True  # if true G43 will be output following tool changes
 OUTPUT_DOUBLES = (
     True  # if false duplicate axis values are suppressed if the same as previous line.
 )
 COMMAND_SPACE = " "
-LINENR = 0  # line number starting value
+LINENR = 100  # line number starting value
 
 # These globals will be reflected in the Machine configuration of the project
 UNITS = "G21"  # G21 for metric, G20 for us standard
 UNIT_SPEED_FORMAT = "mm/min"
 UNIT_FORMAT = "mm"
 
-MACHINE_NAME = "Laguna"
+MACHINE_NAME = "not set"
 CORNER_MIN = {"x": 0, "y": 0, "z": 0}
-CORNER_MAX = {"x": 500, "y": 300, "z": 300}
+CORNER_MAX = {"x": 1000, "y": 600, "z": 300}
 PRECISION = 3
 
 # Preamble text will appear at the beginning of the GCODE output file.
-PREAMBLE = """
+PREAMBLE = """% 
+G17 G21 G40 G49 G80 G90 
+M08
 """
 
 # Postamble text will appear following the last operation.
-POSTAMBLE = """M05
+POSTAMBLE = """M05 M09
+G17 G90 G80 G40
 M30
 """
 
@@ -125,7 +134,8 @@ PRE_OPERATION = """"""
 POST_OPERATION = """"""
 
 # Tool Change commands will be inserted before a tool change
-TOOL_CHANGE = """"""
+TOOL_CHANGE = """M05 
+M09"""
 
 # to distinguish python built-in open function from the one declared below
 if open.__module__ in ["__builtin__", "io"]:
@@ -144,51 +154,36 @@ def processArguments(argstring):
     global UNIT_SPEED_FORMAT
     global UNIT_FORMAT
     global MODAL
-    global USE_TLO
     global OUTPUT_DOUBLES
 
     try:
         args = parser.parse_args(shlex.split(argstring))
         if args.no_header:
             OUTPUT_HEADER = False
-        print("Output header = %d" % OUTPUT_HEADER)
         if args.no_comments:
             OUTPUT_COMMENTS = False
-        print("Output comments = %d" % OUTPUT_COMMENTS)
         if args.line_numbers:
             OUTPUT_LINE_NUMBERS = True
-        print("Output line numbers = %d" % OUTPUT_LINE_NUMBERS)
         if args.no_show_editor:
             SHOW_EDITOR = False
         print("Show editor = %d" % SHOW_EDITOR)
         PRECISION = args.precision
         if args.preamble is not None:
             PREAMBLE = args.preamble
-        print("Preamble = " + PREAMBLE)
         if args.postamble is not None:
             POSTAMBLE = args.postamble
-        print("Postamble = " + POSTAMBLE)
         if args.inches:
             UNITS = "G20"
             UNIT_SPEED_FORMAT = "in/min"
             UNIT_FORMAT = "in"
             PRECISION = 4
-        print("Units = " + UNITS)
-        print("Unit speed format = " + UNIT_SPEED_FORMAT)
-        print("Unit format = " + UNIT_FORMAT)
-        print("Precision = " + PRECISION)
         if args.modal:
             MODAL = True
-        print("Modal = %d" % MODAL)
-        if args.no_tlo:
-            USE_TLO = False
-        print("Use TLO = %d" % USE_TLO)
         if args.axis_modal:
             print("here")
             OUTPUT_DOUBLES = False
-        print("OutputDoubles = %d" % OUTPUT_DOUBLES)
 
-    except Exception:
+    except:
         return False
 
     return True
@@ -210,13 +205,12 @@ def export(objectslist, filename, argstring):
             )
             return None
 
-    print("Begin postprocessing...")
+    print("postprocessing...")
     gcode = ""
 
     # write header
     if OUTPUT_HEADER:
         gcode += linenumber() + "(Exported by FreeCAD)\n"
-        gcode += linenumber() + "(Filename: " + filename + ")\n"
         gcode += linenumber() + "(Post Processor: " + __name__ + ")\n"
         gcode += linenumber() + "(Output Time:" + str(now) + ")\n"
 
@@ -225,51 +219,38 @@ def export(objectslist, filename, argstring):
         gcode += linenumber() + "(begin preamble)\n"
     for line in PREAMBLE.splitlines(False):
         gcode += linenumber() + line + "\n"
-    if OUTPUT_COMMENTS:
-        gcode += linenumber() + "(" + UNITS + ")\n"
     gcode += linenumber() + UNITS + "\n"
-    if OUTPUT_COMMENTS:
-        gcode += linenumber() + "(finish preamble)\n"
 
     for obj in objectslist:
 
-        # Skip inactive operations
-        if hasattr(obj, "Active"):
-            if not obj.Active:
-                continue
-        if hasattr(obj, "Base") and hasattr(obj.Base, "Active"):
-            if not obj.Base.Active:
-                continue
+        # fetch machine details
+        job = PathUtils.findParentJob(obj)
+
+        myMachine = "not set"
+
+        if hasattr(job, "MachineName"):
+            myMachine = job.MachineName
+
+        if hasattr(job, "MachineUnits"):
+            if job.MachineUnits == "Metric":
+                UNITS = "G21"
+                UNIT_FORMAT = "mm"
+                UNIT_SPEED_FORMAT = "mm/min"
+            else:
+                UNITS = "G20"
+                UNIT_FORMAT = "in"
+                UNIT_SPEED_FORMAT = "in/min"
 
         # do the pre_op
         if OUTPUT_COMMENTS:
             gcode += linenumber() + "(begin operation: %s)\n" % obj.Label
-            gcode += linenumber() + "(machine units: %s)\n" % (UNIT_SPEED_FORMAT)
+            gcode += linenumber() + "(machine: %s, %s)\n" % (
+                myMachine,
+                UNIT_SPEED_FORMAT,
+            )
         for line in PRE_OPERATION.splitlines(True):
             gcode += linenumber() + line
 
-        # get coolant mode
-        coolantMode = "None"
-        if (
-            hasattr(obj, "CoolantMode")
-            or hasattr(obj, "Base")
-            and hasattr(obj.Base, "CoolantMode")
-        ):
-            if hasattr(obj, "CoolantMode"):
-                coolantMode = obj.CoolantMode
-            else:
-                coolantMode = obj.Base.CoolantMode
-
-        # turn coolant on if required
-        if OUTPUT_COMMENTS:
-            if not coolantMode == "None":
-                gcode += linenumber() + "(Coolant On:" + coolantMode + ")\n"
-        if coolantMode == "Flood":
-            gcode += linenumber() + "M8" + "\n"
-        if coolantMode == "Mist":
-            gcode += linenumber() + "M7" + "\n"
-
-        # process the operation gcode
         gcode += parse(obj)
 
         # do the post_op
@@ -278,34 +259,24 @@ def export(objectslist, filename, argstring):
         for line in POST_OPERATION.splitlines(True):
             gcode += linenumber() + line
 
-        # turn coolant off if required
-        if not coolantMode == "None":
-            if OUTPUT_COMMENTS:
-                gcode += linenumber() + "(Coolant Off:" + coolantMode + ")\n"
-            gcode += linenumber() + "M9" + "\n"
-
     # do the post_amble
     if OUTPUT_COMMENTS:
-        gcode += linenumber() + "(begin postamble)\n"
+        gcode += "(begin postamble)\n"
     for line in POSTAMBLE.splitlines(True):
         gcode += linenumber() + line
-    if OUTPUT_COMMENTS:
-        gcode += linenumber() + "(finish preamble)\n"
 
     if FreeCAD.GuiUp and SHOW_EDITOR:
-        final = gcode
-        if len(gcode) > 100000:
-            print("Skipping editor since output is greater than 100kb")
+        dia = PostUtils.GCodeEditorDialog()
+        dia.editor.setText(gcode)
+        result = dia.exec_()
+        if result:
+            final = dia.editor.toPlainText()
         else:
-            dia = PostUtils.GCodeEditorDialog()
-            dia.editor.setText(gcode)
-            result = dia.exec_()
-            if result:
-                final = dia.editor.toPlainText()
+            final = gcode
     else:
         final = gcode
 
-    print("finish postprocessing.")
+    print("done postprocessing.")
 
     if not filename == "-":
         gfile = pythonopen(filename, "w")
@@ -336,7 +307,7 @@ def parse(pathobj):
     currLocation = {}  # keep track for no doubles
 
     # the order of parameters
-    # laguna doesn't want K properties on XY plane  Arcs need work.
+    # linuxcnc doesn't want K properties on XY plane  Arcs need work.
     params = [
         "X",
         "Y",
@@ -360,8 +331,8 @@ def parse(pathobj):
     currLocation.update(firstmove.Parameters)  # set First location Parameters
 
     if hasattr(pathobj, "Group"):  # We have a compound or project.
-        if OUTPUT_COMMENTS:
-            out += linenumber() + "(compound: " + pathobj.Label + ")\n"
+        # if OUTPUT_COMMENTS:
+        #     out += linenumber() + "(compound: " + pathobj.Label + ")\n"
         for p in pathobj.Group:
             out += parse(p)
         return out
@@ -371,8 +342,8 @@ def parse(pathobj):
         if not hasattr(pathobj, "Path"):
             return out
 
-        if OUTPUT_COMMENTS:
-            out += linenumber() + "(" + pathobj.Label + ")\n"
+        # if OUTPUT_COMMENTS:
+        #     out += linenumber() + "(" + pathobj.Label + ")\n"
 
         for c in pathobj.Path.Commands:
 
@@ -394,17 +365,23 @@ def parse(pathobj):
                     if param == "F" and (
                         currLocation[param] != c.Parameters[param] or OUTPUT_DOUBLES
                     ):
-                        speed = Units.Quantity(
-                            c.Parameters["F"], FreeCAD.Units.Velocity
-                        )
-                        if speed.getValueAs(UNIT_SPEED_FORMAT) > 0.0:
-                            outstring.append(
-                                param
-                                + format(
-                                    float(speed.getValueAs(UNIT_SPEED_FORMAT)),
-                                    precision_string,
-                                )
+                        if c.Name not in [
+                            "G0",
+                            "G00",
+                        ]:  # linuxcnc doesn't use rapid speeds
+                            speed = Units.Quantity(
+                                c.Parameters["F"], FreeCAD.Units.Velocity
                             )
+                            if speed.getValueAs(UNIT_SPEED_FORMAT) > 0.0:
+                                outstring.append(
+                                    param
+                                    + format(
+                                        float(speed.getValueAs(UNIT_SPEED_FORMAT)),
+                                        precision_string,
+                                    )
+                                )
+                        else:
+                            continue
                     elif param == "T":
                         outstring.append(param + str(int(c.Parameters["T"])))
                     elif param == "H":
@@ -437,15 +414,10 @@ def parse(pathobj):
 
             # Check for Tool Change:
             if command == "M6":
-                # stop the spindle
-                out += linenumber() + "M5\n"
+                # if OUTPUT_COMMENTS:
+                #     out += linenumber() + "(begin toolchange)\n"
                 for line in TOOL_CHANGE.splitlines(True):
                     out += linenumber() + line
-
-                # add height offset
-                if USE_TLO:
-                    tool_height = "\nG43 H" + str(int(c.Parameters["T"]))
-                    outstring.append(tool_height)
 
             if command == "message":
                 if OUTPUT_COMMENTS is False:
@@ -461,11 +433,6 @@ def parse(pathobj):
                 # append the line to the final output
                 for w in outstring:
                     out += w + COMMAND_SPACE
-                # Note: Do *not* strip `out`, since that forces the allocation
-                # of a contiguous string & thus quadratic complexity.
-                out += "\n"
+                out = out.strip() + "\n"
 
         return out
-
-
-# print(__name__ + " gcode postprocessor loaded.")
